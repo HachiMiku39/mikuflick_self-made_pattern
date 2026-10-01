@@ -203,17 +203,17 @@ The standalone `2` and `1` events around the first interlude support a section/k
 
 ```text
 <MikuFlick02 application data container>/Library/InstallData/
-├── Mov_18/
+├── Mov_çnumber/
 │   ├── songname.usm
 │   ├── songname2.usm
 │   ├── songname3.usm
-│   ├── music_18_01.png
+│   ├── music_(2-digits-number)_01.png
 │   ├── pv_xxx_lp.adx
 │   ├── pv_yyy_lp.adx
 │   ├── pv_zzz_lp.adx
 │   └── verificationFile.dat
-└── Thum_18/
-    └── thum_18.png
+└── Thum_(2-digits-number)/
+    └── thum_(2-digits-number).png
 ```
 
 `xxx`, `yyy`, and `zzz` represent three distinct three-digit identifiers. The proposed convention also avoids identifiers already used by existing resources. Underscores are literal filename characters, without backslashes. Following the observed `thum_17.png` naming pattern, the candidate thumbnail filename is **`thum_18.png`**, not `thum18.png`. The application data-container path varies by system and installation.
@@ -228,8 +228,29 @@ Three songs per pack follows the observed DLC template: the parsed catalog conta
 | `thum_18.png` | Proposed thumbnail atlas; the inspected `thum_17.png` is 512 × 512 with gameplay screenshots and small covers | Follow the working atlas layout; automatic detection of new crop regions is not established |
 | `verificationFile.dat` | Observed filename/SHA-1 manifest | Update every affected entry using actual filenames and file contents; old hashes cannot simply be copied |
 
+open the `verificationFile.dat` shows the contents below:
+```text(for example)
+verification datas
+
+7194d1a0a4948e9f38bdcda3a1da59cab3bcf5a6  colorful_melody.usm
+
+67736bd1da56c04ff88f0850eb3029678e5efea1  kotti_muite_baby.usm
+
+cd2c04f37c486a90ea417f47b9ff36882100138b  Yellow.usm
+
+6e2085bb6c4b5ac8a8a84e53fb092c88b1e84299  pv_038_lp.adx
+
+4f016831a168fe7d3c9bb1491df4d7047bd30c2f  pv_040_lp.adx
+
+40ec3573288219bbe4b582af5017ace13dcf5f1a  pv_041_lp.adx
+
+e969062d9ce33d2c5b61040d1b4913097cb283f0  music_**_01.png
+eof
+```
+
 The atlases and `m_ArtWorkIndex` values 0, 1, and 2 support selecting artwork by song index, but the complete crop coordinates and loading rules remain unconfirmed. Start with the dimensions, positions, and ordering of a working pack.
 
+Seems that there is another encryption of soundpack. It's not OK to just change the package number, like `/Mov_18`,`music_18_01.png`, or package numbers in `verificationFile.dat`
 ### 6.2 Pack 17 reference and sample provenance
 
 The previously inspected pack 17 inventory and registration records correspond as follows:
