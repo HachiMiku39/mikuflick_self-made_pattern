@@ -251,6 +251,742 @@ eof
 The atlases and `m_ArtWorkIndex` values 0, 1, and 2 support selecting artwork by song index, but the complete crop coordinates and loading rules remain unconfirmed. Start with the dimensions, positions, and ordering of a working pack.
 
 Seems that there is another encryption of soundpack. It's not OK to just change the package number, like `/Mov_18`,`music_18_01.png`, or package numbers in `verificationFile.dat`
+
+## Follow-up Research: `MikuFlick2.dat` and Music Pack Registration
+
+Further analysis of the general game save file, `MikuFlick2.dat`, shows that it contains a complete music pack catalog and per-song registration data.
+
+This is important for custom pack research because it suggests that simply creating a new resource directory such as `Mov_18` is not sufficient. The game appears to maintain a separate catalog layer that determines which music packs and songs exist.
+
+### File Structure
+
+`MikuFlick2.dat` is not encrypted. It is a nested Apple property list archive using `NSKeyedArchiver`.
+
+The structure is approximately:
+
+```text
+MikuFlick2.dat
+└── NSKeyedArchiver
+    └── StatusData
+        ├── game settings / statistics / progress data
+        └── m_MusicPackArray
+            └── NSMutableData
+                └── bplist00
+                    └── NSKeyedArchiver
+                        └── NSMutableArray
+                            ├── MusicPack
+                            ├── MusicPack
+                            ├── ...
+                            └── MusicPack
+```
+
+Each `MusicPack` contains another archived data object:
+
+```text
+MusicPack
+├── m_PackID
+├── m_PackName
+├── m_Date
+├── m_IsBuy
+├── m_IsInstalled
+└── m_MusicDataArray
+    └── NSMutableData
+        └── bplist00
+            └── NSKeyedArchiver
+                └── NSMutableArray
+                    ├── MusicData
+                    ├── MusicData
+                    └── MusicData
+```
+
+Therefore, the save file contains both:
+
+1. a music pack catalog, and
+2. the song records belonging to each pack.
+
+---
+
+### Registered Pack IDs
+
+The analyzed save contains 22 `MusicPack` objects.
+
+The registered pack IDs are:
+
+```text
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+96
+97
+98
+99
+```
+
+The important result is that:
+
+```text
+Pack ID 18 does not exist in the save file.
+```
+
+This means that creating:
+
+```text
+Mov_18/
+music_18_01.png
+verificationFile.dat
+```
+
+does not automatically create a `MusicPack` entry for Pack 18.
+
+The game therefore does not appear to discover all installed music packs by simply scanning `Mov_*` directories.
+
+A more likely loading model is:
+
+```text
+MikuFlick2.dat / internal music catalog
+        │
+        ├── Does this MusicPack exist?
+        ├── Is the pack purchased?
+        ├── Is the pack installed?
+        │
+        ▼
+     Pack ID
+        │
+        ▼
+   corresponding resources
+        │
+        ├── USM
+        ├── ADX
+        ├── artwork
+        └── verificationFile.dat
+```
+
+---
+
+### Pack State
+
+The analyzed save contains catalog entries for Packs `0-17` and `96-99`, even when the corresponding pack is not marked as installed.
+
+For example, Pack 17 contains fields similar to:
+
+```text
+m_PackID        = 17
+m_PackName      = "Rock_Pack01"
+m_Date          = "13/12/20"
+m_IsBuy         = true
+m_IsInstalled   = false
+m_MusicDataArray = <nested archive>
+```
+
+In this save:
+
+```text
+Pack 0:
+    m_IsInstalled = true
+
+Packs 1-17 and 96-99:
+    m_IsInstalled = false
+```
+
+All registered packs have:
+
+```text
+m_IsBuy = true
+```
+
+This strongly suggests that pack existence, purchase state, and installation state are stored separately.
+
+Therefore:
+
+```text
+Directory exists
+```
+
+does not necessarily mean:
+
+```text
+MusicPack exists in the catalog
+```
+
+and:
+
+```text
+MusicPack exists
+```
+
+does not necessarily mean:
+
+```text
+MusicPack is installed
+```
+
+---
+
+### `MusicData` Records
+
+Each song has its own `MusicData` object.
+
+Relevant fields include:
+
+```text
+m_Index
+m_Title
+m_Artist
+
+m_MovieDataFileName
+m_PreSoundFileName
+
+m_ArtWorkFileName
+m_ArtWorkIndex
+
+m_BPM
+m_InputTiming
+m_NoteDelay
+
+m_DifficultNum0
+m_DifficultNum1
+m_DifficultNum2
+m_DifficultNum3
+m_DifficultNum4
+
+m_PreInstall
+m_PVListEnable
+m_PVUnlock
+m_PVView
+```
+
+There are also many progress-related fields, including values for:
+
+```text
+clear state
+unlock state
+top scores
+flick results
+flick success counts
+replay data
+```
+
+Therefore, `MusicData` is not only static song metadata. It also acts as part of the per-song save state.
+
+---
+
+### Example: Pack 17
+
+Pack 17 contains three songs:
+
+| Global Index | Title | Movie data | Preview audio | Artwork | Artwork Index |
+|---:|---|---|---|---|---:|
+| 59 | 孤独の果て -extend edition- | `kodokunohate` | `pv_085_lp` | `music_17_01` | 0 |
+| 60 | ローリンガール | `rolling_girl` | `pv_091_lp` | `music_17_01` | 1 |
+| 61 | 透明水彩 | `toumei_suisai` | `pv_210_lp` | `music_17_01` | 2 |
+
+The resource filenames are stored without file extensions.
+
+For example:
+
+```text
+m_MovieDataFileName = "rolling_girl"
+```
+
+rather than:
+
+```text
+Mov_17/rolling_girl.usm
+```
+
+Similarly:
+
+```text
+m_PreSoundFileName = "pv_091_lp"
+```
+
+instead of:
+
+```text
+Mov_17/pv_091_lp.adx
+```
+
+This suggests that the directory name and file extension may be generated by the game code.
+
+A possible implementation would be conceptually similar to:
+
+```text
+Pack ID 17
+    ↓
+Mov_17/
+    ↓
+rolling_girl
+    ↓
+rolling_girl.usm
+```
+
+This exact path-generation logic has not yet been confirmed.
+
+---
+
+### Global Song Index
+
+The analyzed save contains 74 songs with global indexes:
+
+```text
+0-73
+```
+
+The indexes are continuous across all music packs.
+
+For example:
+
+```text
+Pack 0  -> indexes 0-10
+Pack 1  -> indexes 11-13
+Pack 2  -> indexes 14-16
+...
+Pack 17 -> indexes 59-61
+
+Pack 96 -> indexes 62-64
+Pack 97 -> indexes 65-67
+Pack 98 -> indexes 68-70
+Pack 99 -> indexes 71-73
+```
+
+This confirms that:
+
+```text
+m_Index
+```
+
+is a global song ID rather than a song number local to each pack.
+
+If a three-song Pack 18 can be added successfully, the most natural candidate indexes are therefore:
+
+```text
+74
+75
+76
+```
+
+However, unused indexes do not automatically prove that the game accepts additional entries.
+
+---
+
+### Artwork Atlas Behavior
+
+The save provides additional evidence for the artwork atlas hypothesis.
+
+Songs in a normal three-song DLC pack share the same artwork file:
+
+```text
+m_ArtWorkFileName = "music_17_01"
+```
+
+while selecting different artwork entries through:
+
+```text
+m_ArtWorkIndex = 0
+m_ArtWorkIndex = 1
+m_ArtWorkIndex = 2
+```
+
+For example:
+
+```text
+Song 1:
+    m_ArtWorkFileName = "music_17_01"
+    m_ArtWorkIndex = 0
+
+Song 2:
+    m_ArtWorkFileName = "music_17_01"
+    m_ArtWorkIndex = 1
+
+Song 3:
+    m_ArtWorkFileName = "music_17_01"
+    m_ArtWorkIndex = 2
+```
+
+No explicit crop coordinates were found in the corresponding `MusicData` records.
+
+This suggests that the crop layout is probably fixed elsewhere, for example:
+
+```text
+m_ArtWorkIndex
+        ↓
+predefined atlas slot
+        ↓
+fixed crop rectangle
+```
+
+The exact crop coordinates and loading implementation remain unconfirmed.
+
+---
+
+### No `Mov_*` or Verification Paths in the Save
+
+Searching the save file did not reveal strings such as:
+
+```text
+Mov_
+Thum_
+verification
+music_18
+checksum
+signature
+```
+
+The save stores resource base names, but not complete filesystem paths.
+
+For example:
+
+```text
+m_MovieDataFileName = "kodokunohate"
+m_PreSoundFileName  = "pv_085_lp"
+m_ArtWorkFileName   = "music_17_01"
+```
+
+This suggests that resource paths may be generated using the `m_PackID`.
+
+The save file appears responsible for:
+
+```text
+Pack registration
+Song registration
+Resource base names
+Purchase state
+Installation state
+Song metadata
+Song progress
+```
+
+while directory mapping and actual file loading are probably handled elsewhere in the game.
+
+---
+
+## Implications for Custom Pack 18
+
+Earlier testing showed that simply cloning a working pack and changing values such as:
+
+```text
+Mov_17 -> Mov_18
+music_17_01.png -> music_18_01.png
+verificationFile.dat filenames / hashes
+```
+
+was not sufficient to make a working new pack.
+
+This should not currently be described as evidence of "sound pack encryption."
+
+A more accurate conclusion is:
+
+> There appears to be an additional pack-level catalog, registration, or validation mechanism.
+
+`MikuFlick2.dat` now provides direct evidence for at least one such mechanism.
+
+A custom `Mov_18` directory may contain valid resources, but the game may never attempt to load them unless a corresponding `MusicPack` object exists.
+
+The current model is:
+
+```text
+                   MikuFlick2.dat
+                        │
+                  MusicPack 18
+                        │
+             ┌──────────┴──────────┐
+             │                     │
+        Pack metadata         MusicData array
+                                   │
+                             Songs 74 / 75 / 76
+                                   │
+                                   ▼
+                              m_PackID = 18
+                                   │
+                                   ▼
+                               Mov_18/
+                                   │
+                     ┌─────────────┼─────────────┐
+                     │             │             │
+                    USM           ADX           PNG
+                     │
+                     ▼
+             verificationFile.dat
+```
+
+Previous Pack 18 experiments mostly tested the lower half of this chain.
+
+The catalog layer now needs to be tested as well.
+
+---
+
+## Proposed Minimal Pack 18 Test
+
+The next experiment should avoid introducing new songs, new charts, or modified media.
+
+Start from a known working pack, such as Pack 17.
+
+### Step 1: Clone the Pack 17 catalog entry
+
+Create a new `MusicPack` object based on Pack 17:
+
+```text
+m_PackID        = 18
+m_PackName      = "Custom_Pack01"
+m_IsBuy         = true
+m_IsInstalled   = true
+```
+
+The remaining fields should initially stay as close as possible to a known working pack.
+
+### Step 2: Clone its three `MusicData` objects
+
+Assign new global indexes:
+
+```text
+74
+75
+76
+```
+
+Keep the original Pack 17 resource names initially:
+
+```text
+kodokunohate
+rolling_girl
+toumei_suisai
+
+pv_085_lp
+pv_091_lp
+pv_210_lp
+```
+
+Only the artwork name may need to change to:
+
+```text
+music_18_01
+```
+
+with:
+
+```text
+m_ArtWorkIndex = 0
+m_ArtWorkIndex = 1
+m_ArtWorkIndex = 2
+```
+
+### Step 3: Copy the original resources byte-for-byte
+
+Create:
+
+```text
+Mov_18/
+```
+
+and copy the known working files without modifying their contents.
+
+For example:
+
+```text
+kodokunohate.usm
+rolling_girl.usm
+toumei_suisai.usm
+
+pv_085_lp.adx
+pv_091_lp.adx
+pv_210_lp.adx
+```
+
+Generate a corresponding `verificationFile.dat` using the actual hashes of those copied files.
+
+This test intentionally avoids custom USM construction.
+
+Its only purpose is to answer:
+
+> Can the game register and load an additional music pack when both the catalog entry and resource directory exist?
+
+---
+
+## Interpreting the Result
+
+Different failure modes would point to different parts of the loading system.
+
+### Pack 18 does not appear at all
+
+Likely areas to investigate:
+
+```text
+MusicPack catalog serialization
+Pack ID whitelist
+Pack count limit
+internal DLC table
+catalog reconstruction at startup
+```
+
+### Pack 18 appears, but artwork or preview audio fails
+
+Likely areas:
+
+```text
+resource path generation
+artwork atlas rules
+filename mapping
+Pack ID -> directory mapping
+```
+
+### Pack 18 appears, but selecting a song fails
+
+Likely areas:
+
+```text
+USM lookup
+song index limits
+verificationFile.dat
+additional resource validation
+hardcoded music tables
+```
+
+### Pack 18 works until the game restarts
+
+Likely areas:
+
+```text
+save regeneration
+internal master catalog
+catalog versioning
+download / installation metadata
+```
+
+---
+
+## Other Save-Level Fields
+
+The outer `StatusData` also contains fields including:
+
+```text
+version = 27
+m_InfoSerial = 26
+```
+
+Their exact purpose is currently unknown.
+
+There is not yet enough evidence to modify them.
+
+However, they should be investigated if a manually inserted Pack 18 entry is:
+
+```text
+accepted temporarily
+```
+
+but later:
+
+```text
+removed or overwritten after restarting the game
+```
+
+Such behavior could indicate that the game rebuilds `m_MusicPackArray` from another internal catalog.
+
+---
+
+## Current Conclusion
+
+The evidence now supports the following:
+
+### Confirmed
+
+- `MikuFlick2.dat` is an `NSKeyedArchiver`-based save file.
+- It contains `m_MusicPackArray`.
+- It contains registered `MusicPack` objects.
+- Registered Pack IDs are `0-17` and `96-99`.
+- Pack 18 is not present.
+- Each `MusicPack` contains its own `MusicData` array.
+- `MusicData.m_Index` is a global song index.
+- Existing song indexes cover `0-73`.
+- Resource base names are stored in `MusicData`.
+- Full `Mov_*` filesystem paths are not stored in the save.
+- `m_ArtWorkIndex` values `0`, `1`, and `2` correspond to different entries in a shared artwork atlas.
+
+### Strongly supported
+
+- The game does not discover music packs solely by scanning `Mov_*` directories.
+- A valid music pack probably requires both catalog registration and filesystem resources.
+- Pack directory names are probably derived from `m_PackID`.
+- Artwork crop positions are probably selected using a fixed atlas layout.
+
+### Not yet confirmed
+
+- Whether Pack ID 18 is accepted by the executable.
+- Whether the number of `MusicPack` objects is hardcoded.
+- Whether song indexes above 73 are accepted.
+- Whether the game rebuilds the music catalog during startup.
+- Whether `version` or `m_InfoSerial` participate in catalog synchronization.
+- Whether another internal DLC table exists.
+- Whether any additional validation exists beyond `verificationFile.dat`.
+- Whether custom Pack 18 resources can be loaded successfully.
+
+The current evidence does **not** establish that the missing mechanism is encryption.
+
+For now, the more accurate description is:
+
+> **an additional music-pack catalog, registration, or validation mechanism remains to be reverse-engineered.**
+## `verificationFile.dat` Runtime Test
+
+`verificationFile.dat` contains SHA-1 hashes for the files inside each music pack.
+
+For example, the original `hello_planet.usm` entry in `Mov_11` was:
+
+```text
+5c3a4a663c97528b34fe509b94b087a17800d2f5  hello_planet.usm
+```
+
+After modifying the USM to display Chinese MV lyrics, the actual SHA-1 became:
+
+```text
+d82d241bf52a5c3b3d43510ac7c656588191f7aa  hello_planet.usm
+```
+
+However, in a later test, only the modified `hello_planet.usm` was imported. `verificationFile.dat` was left unchanged and still contained the original SHA-1.
+
+The game still loaded and played the modified song normally.
+
+### Result
+
+This shows that the SHA-1 values in `verificationFile.dat` are **not enforced during normal playback of an already installed music pack**.
+
+The file may instead be used for another purpose, such as:
+
+- DLC download verification
+- installation integrity checks
+- repair or re-download checks
+- installer-side validation
+
+Its exact purpose is still unknown.
+
+Therefore, `verificationFile.dat` should currently be treated as a low-priority part of the custom pack investigation.
+
+In particular, failure of a custom `Mov_18` pack is now less likely to be caused by SHA-1 mismatch and more likely to involve:
+
+```text
+MusicPack registration
+MusicData registration
+Pack ID handling
+internal DLC catalog
+installation state
+hardcoded pack limits
+```
+
+Further testing should include deleting or deliberately corrupting `verificationFile.dat` to determine whether it is required at all after installation.
+
 ### 6.2 Pack 17 reference and sample provenance
 
 The previously inspected pack 17 inventory and registration records correspond as follows:
