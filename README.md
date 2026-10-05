@@ -1084,3 +1084,1521 @@ Write the resulting 40-digit hexadecimal digest to the `hello_planet.usm` entry 
 - [HxD](https://mh-nexus.de/en/hxd/) · [Hex Fiend](https://hexfiend.com/)
 
 The external references explain the general container format. Sample statistics, parameters, and registration fields come from file inspection; game behavior comes from the maintainer’s observations and the one-byte EASY edit. Other direction/timing edits, special-event meanings, and custom-pack registration remain explicitly unverified. This document is a research record, not a complete format specification or a finished chart editor.
+
+# MikuFlick2 1.1.5 Game Mechanics Reverse-Engineering Notes
+
+> Based on static analysis of the iOS version of `MikuFlick2` 1.1.5 (ARMv7) in Ghidra.  
+> This document records only mechanics that have been confirmed from the binary or can be inferred with high confidence from the current analysis. Anything not fully traced is explicitly marked.
+
+---
+
+## 0. Target Binary and Confidence Labels
+
+### Binary Information
+
+- App: `MikuFlick2`
+- Version: 1.1.5
+- Main executable: `Payload/MikuFlick2.app/MikuFlick2`
+- Mach-O: 32-bit ARMv7
+- Universal/Fat binary: No, `armv7` only
+- FairPlay:
+  - `LC_ENCRYPTION_INFO`
+  - `cryptid 0`
+  - The code section in this sample is decrypted and can be analyzed directly
+- Main implementation technologies:
+  - Objective-C
+  - C / C++
+  - CRI Middleware (CRI Mana / CRI Atom)
+- Reverse-engineering tool: Ghidra 12.1.4
+
+### Confidence Labels
+
+- **[Confirmed]**: Directly verified from functions, tables, or control flow.
+- **[High-confidence inference]**: The relationship is very clear from code, but some surrounding logic has not been fully traced.
+- **[Not fully investigated]**: Analysis has not yet been completed.
+
+---
+
+# 1. Main Game Loop
+
+Core entry point:
+
+```text
+-[SceneGame_Exec]
+```
+
+Confirmed per-frame execution order:
+
+```text
+SceneGame_Exec
+│
+├─ Update elapsed/play time
+├─ MikuFlickCriManager_Exec
+├─ NoteManager_exec
+├─ ReplayManager_Replay       (Replay Mode only)
+├─ TouchManager_exec
+├─ StageManager_exec
+├─ WindowManager_exec
+└─ EffectManager_exec
+```
+
+## 1.1 Note Update Order
+
+`+[NoteManager_exec]` iterates over the current Note collection and, for each Note:
+
+```text
+note.exec()
+setNextTarget(0)
+adjust Z position depending on active state
+```
+
+It then iterates over the Notes again and marks the first active Note as:
+
+```text
+setNextTarget(1)
+```
+
+Therefore, `NextTarget` is effectively the current Note that should receive priority highlighting / guidance.
+
+---
+
+# 2. Timing System: Judgement Is Not Tied to Render Frames
+
+This is one of the most important findings in the judgement system.
+
+## 2.1 Playback Counter
+
+`+[MikuFlickCriManager_Exec]`:
+
+```c
+playTime = CriManager::GetPlayTime();
+PlayCnt = ceil(playTime * 30.0f);
+```
+
+Global playback counter:
+
+```text
+DAT_00164340
+```
+
+`+[MikuFlickCriManager_GetPlayCnt]` simply returns:
+
+```c
+return DAT_00164340;
+```
+
+## 2.2 Per-Note Time
+
+Inside `-[NoteNormal_exec]`:
+
+```c
+m_Cnt = MikuFlickCriManager_GetPlayCnt() - m_BaseTime;
+```
+
+So Notes do not run on:
+
+```text
+one rendered frame → m_Cnt++
+```
+
+Instead:
+
+```text
+CRI audio playback time
+        ↓
+converted to a 30 Hz PlayCnt
+        ↓
+minus the Note's BaseTime
+        ↓
+current Note m_Cnt
+```
+
+### Conclusion
+
+**[Confirmed]**
+
+```text
+1 tick ≈ 1 / 30 s ≈ 33.33 ms
+```
+
+The gameplay clock is therefore tied to the audio clock, not the display refresh rate.
+
+This matters on 2012-era mobile hardware: visual frame drops should not directly cause judgement timing to drift.
+
+## 2.3 CRI Time Source
+
+Call chain:
+
+```text
+MikuFlickCriManager_Exec
+↓
+CriManager::GetPlayTime
+↓
+_criManaPlayer_GetTime
+↓
+CriMvEasyPlayer::GetTime
+```
+
+`CriManager::GetPlayTime()` ultimately returns:
+
+```text
+timeValue / timeBase
+```
+
+`CriMvEasyPlayer::GetTime()` also contains timing correction logic involving:
+
+```text
+0.0333667
+```
+
+which is approximately the frame interval of 29.97 fps.
+
+---
+
+# 3. Judgement Enumeration
+
+From `NoteNormal_checkResult::::`, the result screen, and `StatusData` bookkeeping, the internal judgement IDs are fully confirmed:
+
+| Internal Value | Judgement |
+|---:|---|
+| 0 | Internal invalid / no-result state |
+| 1 | WORST |
+| 2 | SAD |
+| 3 | SAFE |
+| 4 | FINE |
+| 5 | COOL |
+
+The result screen directly reads:
+
+```text
+GetTmpNoteResult(5) → Cool
+GetTmpNoteResult(4) → Fine
+GetTmpNoteResult(3) → Safe
+GetTmpNoteResult(2) → Sad
+GetTmpNoteResult(1) → Worst
+```
+
+Value `0` is not shown as one of the five visible judgement categories, but internal arrays and high-score storage keep six slots (`0~5`).
+
+---
+
+# 4. Normal Note Judgement Windows
+
+Relevant tables:
+
+```text
+s_tblNoteNormal_Front @ 0x00139488
+s_tblNoteNormal_Back  @ 0x001394B4
+```
+
+Definitions:
+
+```text
+Front = player input earlier than JustFrame
+Back  = player input later than JustFrame
+```
+
+The code calculates:
+
+```c
+delta = JustFrame - TouchFrame;
+```
+
+Therefore:
+
+```text
+delta > 0 → early
+delta < 0 → late
+```
+
+## 4.1 Early Judgement Table
+
+`s_tblNoteNormal_Front`:
+
+| Early Offset | Judgement | Approx. Time |
+|---:|---|---:|
+| 0 tick | COOL | 0 ms |
+| 1 tick | COOL | 33 ms |
+| 2 ticks | COOL | 67 ms |
+| 3 ticks | FINE | 100 ms |
+| 4 ticks | FINE | 133 ms |
+| 5 ticks | FINE | 167 ms |
+| 6 ticks | FINE | 200 ms |
+| 7 ticks | SAFE | 233 ms |
+| 8 ticks | SAFE | 267 ms |
+| 9 ticks | SAD | 300 ms |
+| 10 ticks | SAD | 333 ms |
+
+## 4.2 Late Judgement Table
+
+`s_tblNoteNormal_Back`:
+
+| Late Offset | Judgement | Approx. Time |
+|---:|---|---:|
+| 0 tick | COOL | 0 ms |
+| 1 tick | COOL | 33 ms |
+| 2 ticks | COOL | 67 ms |
+| 3 ticks | COOL | 100 ms |
+| 4 ticks | FINE | 133 ms |
+| 5 ticks | FINE | 167 ms |
+| 6 ticks | FINE | 200 ms |
+| 7 ticks | FINE | 233 ms |
+| 8 ticks | SAFE | 267 ms |
+| 9 ticks | SAFE | 300 ms |
+| 10 ticks | SAD | 333 ms |
+
+### Asymmetry
+
+**[Confirmed]**
+
+Late inputs receive roughly one extra tick of leniency compared with early inputs:
+
+```text
+Early COOL: 0~2
+Late  COOL: 0~3
+
+Early FINE: 3~6
+Late  FINE: 4~7
+
+Early SAFE: 7~8
+Late  SAFE: 8~9
+```
+
+This is a very obvious touch-input compensation design.
+
+---
+
+# 5. TouchDown / TouchUp Combination Logic
+
+A normal Flick Note does not judge only one touch timestamp.
+
+`-[NoteNormal_checkResult::::]` calculates both:
+
+```text
+JustFrame - TouchDownFrame
+JustFrame - TouchUpFrame
+```
+
+Both values are checked against the normal Note Front / Back judgement tables.
+
+## 5.1 Basic Combination
+
+**[Confirmed]**
+
+When both TouchDown and TouchUp are within valid judgement ranges, the game generally takes the worse of the two results:
+
+```text
+TouchDown judgement
+TouchUp judgement
+       ↓
+take the worse result
+```
+
+However, there is special handling for early touch-hold behavior.
+
+## 5.2 Early Hold Leniency
+
+If TouchDown happens early and the combined result would otherwise fall below SAFE:
+
+```c
+if (result < SAFE && TouchDown is before JustFrame)
+    result = SAFE;
+```
+
+There is also a path where TouchDown is much earlier than the normal judgement window, but TouchUp is still timed correctly:
+
+```text
+final result is capped at SAFE
+```
+
+### Design Meaning
+
+**[High-confidence inference]**
+
+This allows the player to:
+
+```text
+place a finger on the screen early
+↓
+wait for the beat
+↓
+perform the Flick / release at the correct time
+```
+
+but prevents that strategy from easily earning FINE or COOL.
+
+This is clearly a touch-oriented "pre-touch leniency" mechanism.
+
+---
+
+# 6. Flick Direction and BoardType
+
+## 6.1 Wrong Flick Direction
+
+The code compares:
+
+```text
+m_FlickResult
+against
+the expected Flick direction for the input
+```
+
+When the direction does not match:
+
+```text
+maximum judgement is capped at SAFE (3)
+```
+
+So an incorrect Flick direction cannot receive FINE or COOL.
+
+## 6.2 BoardType Mismatch
+
+If the Note's `m_BoardType` does not match the input Board:
+
+```text
+result = SAD (2)
+```
+
+This is a direct downgrade path.
+
+## 6.3 Break The Limit Special Handling
+
+When `Difficulty == 4` (Break The Limit), the normal judgement function contains a special branch:
+
+```c
+if (difficulty == 4) {
+    if (result == SAD)
+        result = 0;
+}
+```
+
+This branch also skips the normal:
+
+```text
+NoteManager_AddTensionGauge
+```
+
+call.
+
+Likewise, the normal `ResetCombo()` path used for low judgements is skipped in BTL.
+
+### Current Conclusion
+
+**[Confirmed code behavior / gameplay interpretation incomplete]**
+
+BTL is clearly not just a normal difficulty with tighter numbers. It has separate handling for:
+
+```text
+Gauge
+SAD
+Combo Reset
+```
+
+The full BTL rules have not yet been fully traced.
+
+---
+
+# 7. WORST and Note Lifetime
+
+`NoteNormal_exec` determines whether a Note is within its active judgement region based on `m_JustFrame`.
+
+For normal difficulties:
+
+```text
+InsideJudge:
+roughly JustFrame - 11
+through
+JustFrame + 11
+```
+
+However, the actual judgement tables only define normal results for `0~10 ticks`.
+
+That leaves a one-tick edge zone that behaves as a buffer / no-valid-result area.
+
+## 7.1 Automatic WORST
+
+On normal difficulties, once:
+
+```text
+m_Cnt >= JustFrame + 12
+```
+
+the Note is deactivated and the game records:
+
+```text
+WORST
+Gauge penalty
+ResetCombo
+miss/failure effect
+```
+
+This is approximately:
+
+```text
+12 ticks late ≈ 400 ms
+```
+
+## 7.2 Break The Limit
+
+Table:
+
+```text
+s_tblDifficultEndTimeOfs
+```
+
+Values:
+
+| Difficulty | Offset |
+|---|---:|
+| Easy | 0 |
+| Normal | 0 |
+| Hard | 0 |
+| Extreme | 0 |
+| Break The Limit | -2 |
+
+Therefore, the BTL Note tail window is shortened by about:
+
+```text
+2 ticks ≈ 66.7 ms
+```
+
+---
+
+# 8. Base Score
+
+Table:
+
+```text
+s_tblAddScore @ 0x001394E4
+```
+
+Primary score group:
+
+| Judgement | Base Stage Score |
+|---|---:|
+| Invalid / none | 0 |
+| WORST | 0 |
+| SAD | 30 |
+| SAFE | 50 |
+| FINE | 150 |
+| COOL | 300 |
+
+Therefore:
+
+```text
+COOL  = 300
+FINE  = 150
+SAFE  = 50
+SAD   = 30
+WORST = 0
+```
+
+## 8.1 Secondary Score Group
+
+The same table also contains:
+
+```text
+0, 0, 30, 50, 150, 250
+```
+
+This group is selected through a `local_28` branch.
+
+In the currently traced normal Flick-direction mismatch path, high judgements are already capped at SAFE, so the `150/250` entries are not reached in the observed flow.
+
+**[Not fully investigated]**
+
+This may correspond to another reachable condition or leftover logic. It is intentionally left unexplained for now.
+
+---
+
+# 9. Combo
+
+## 9.1 Combo Continuation
+
+**[Confirmed]**
+
+```text
+COOL / FINE → AddCombo
+SAFE / SAD / WORST → ResetCombo
+```
+
+Equivalent rule:
+
+```text
+result >= 4 → continue Combo
+result < 4  → break Combo
+```
+
+This applies to the normal difficulty path.
+
+BTL skips the normal ResetCombo branch in this function.
+
+## 9.2 Max Combo
+
+Whenever Combo increases:
+
+```text
+if current Combo > MaxCombo
+→ update MaxCombo
+```
+
+The result screen also reads `GetMaxCombo()`.
+
+---
+
+# 10. Combo Bonus Formula
+
+After a judgement that continues Combo, the game calculates an additional Combo Score.
+
+The compiler's magic-number division is equivalent to:
+
+```text
+floor((Combo + 5) / 10) × 50
+```
+
+with a hard cap of:
+
+```text
+500 points
+```
+
+Approximate behavior:
+
+| Current Combo | Per-Note Combo Bonus |
+|---:|---:|
+| 1~4 | 0 |
+| 5~14 | 50 |
+| 15~24 | 100 |
+| 25~34 | 150 |
+| 35~44 | 200 |
+| 45~54 | 250 |
+| 55~64 | 300 |
+| 65~74 | 350 |
+| 75~84 | 400 |
+| 85~94 | 450 |
+| ≥95 | 500 |
+
+The bonus accumulates into:
+
+```text
+TmpComboScore
+```
+
+The result screen total uses:
+
+```text
+TmpStageScore + TmpComboScore
+```
+
+---
+
+# 11. Tension Gauge
+
+Relevant data:
+
+```text
+s_tblTensionGauge @ 0x00138F4C
+DAT_00163088       current Gauge
+```
+
+## 11.1 Initial Value and Maximum
+
+Inside:
+
+```text
++[NoteManager_Initialize]
+```
+
+the game sets:
+
+```c
+DAT_00163088 = 0x43000000;
+```
+
+Interpreted as IEEE-754 float:
+
+```text
+128.0
+```
+
+Inside `AddTensionGauge`, the maximum is:
+
+```text
+0x43800000 = 256.0
+```
+
+Therefore:
+
+```text
+Initial Gauge = 128
+Maximum Gauge = 256
+Starting Gauge = 50%
+```
+
+This matches the in-game UI, which starts at half gauge.
+
+---
+
+# 12. Gauge Judgement Weights
+
+`s_tblTensionGauge`:
+
+| Judgement | Weight |
+|---|---:|
+| Invalid / none | 0 |
+| WORST | -10 |
+| SAD | -5 |
+| SAFE | 0 |
+| FINE | +2 |
+| COOL | +2 |
+
+Actual Gauge changes are not direct integer additions.
+
+## 12.1 Note-Count Normalization
+
+`+[NoteManager_AddTensionGauge:]` calculates a coefficient based on the total number of Notes:
+
+```text
+GaugeCoefficient ≈ 64 / TotalNotes + 0.01
+```
+
+Actual update:
+
+```text
+Gauge += JudgeWeight × GaugeCoefficient
+```
+
+Then Gauge is clamped to:
+
+```text
+256
+```
+
+Therefore:
+
+```text
+COOL  +2 × coefficient
+FINE  +2 × coefficient
+SAFE   0
+SAD   -5 × coefficient
+WORST -10 × coefficient
+```
+
+### Design Meaning
+
+Charts with fewer Notes:
+
+```text
+each judgement has a larger impact on Gauge
+```
+
+Charts with more Notes:
+
+```text
+each judgement has a smaller impact
+```
+
+This normalizes survival difficulty across charts of different lengths / Note counts.
+
+---
+
+# 13. Game Over Conditions
+
+`AddTensionGauge` confirms two independent fail conditions.
+
+## 13.1 Gauge Reaches Zero
+
+If:
+
+```text
+Gauge <= 0
+```
+
+then:
+
+```c
+DAT_00163088 = 0.0;
+StatusData_SetGameOver(1);
+SceneManager_NextScene(8);
+```
+
+So:
+
+```text
+Gauge <= 0
+→ Game Over
+→ Gauge forced to 0
+→ switch to Scene 8
+```
+
+## 13.2 Early Failure When 50% Success Is No Longer Mathematically Possible
+
+The game calculates:
+
+```text
+successful judgements = SAFE + FINE + COOL
+remaining Notes = TotalNotes - already judged Notes
+```
+
+It then evaluates:
+
+```text
+(successful judgements + remaining Notes) / TotalNotes
+```
+
+This represents:
+
+> The maximum possible SAFE-or-better success rate if every remaining Note is hit successfully.
+
+If that ratio becomes:
+
+```text
+< 50%
+```
+
+the game immediately triggers Game Over.
+
+Therefore, even if Gauge is still above zero, the run ends once:
+
+```text
+it is mathematically impossible to finish with at least 50% SAFE-or-better
+```
+
+---
+
+# 14. Gauge and BGM Volume
+
+Gauge also directly affects the main audio volume.
+
+The code is equivalent to approximately:
+
+```text
+volumeFactor = min(1.0, Gauge / 128 + 0.35)
+```
+
+Then:
+
+```text
+MainAudioVolume = user BGM volume × volumeFactor
+```
+
+Therefore:
+
+- High Gauge: audio remains at 100%
+- Lower Gauge: BGM becomes quieter
+- Near zero Gauge: about 35% base multiplier remains
+- On Game Over, Gauge is forced to zero
+
+This is a classic danger-state audio feedback system.
+
+---
+
+# 15. Crimax System
+
+Crimax is not a simple global mode toggle. It is applied to specific Notes through chart CuePoints.
+
+Entry point:
+
+```text
+CuePointFunc_Crimax
+```
+
+## 15.1 Difficulty-Specific CuePoint Flag
+
+Logic:
+
+```text
+difficulty = GetDifficulty()
+
+read one character from:
+CuePoint[difficulty + 1]
+↓
+convert with intValue
+```
+
+If the value is nonzero:
+
+```text
+GetLastCrimaxEnableNote()
+↓
+setCrimaxMode(1)
+```
+
+This means a single Crimax CuePoint can independently enable or disable Crimax for:
+
+```text
+Easy
+Normal
+Hard
+Extreme
+BTL
+```
+
+---
+
+# 16. Crimax Target Note Selection
+
+`+[NoteManager_GetLastCrimaxEnableNote]`:
+
+```text
+start from the end of the current Note list
+↓
+check up to the most recent 4 Notes
+↓
+return the first Note where isCrimaxEnable == 1
+```
+
+So the CuePoint does not need to align exactly with one Note. It can search backward across the most recent four Notes.
+
+## 16.1 isCrimaxEnable
+
+`-[NoteNormal_isCrimaxEnable]` effectively checks:
+
+```text
+m_OptCharIdx < 0
+```
+
+Therefore:
+
+```text
+m_OptCharIdx < 0  → Crimax allowed
+m_OptCharIdx >= 0 → Crimax not allowed
+```
+
+---
+
+# 17. Crimax Rainbow Effect
+
+Table:
+
+```text
+s_tblRainbow @ 0x00139310
+```
+
+Size:
+
+```text
+84 floats
+= 28 RGB entries
+= 3 × float32 per color
+```
+
+The color values are stored in:
+
+```text
+0~255
+```
+
+and divided by:
+
+```text
+255.0
+```
+
+during rendering to produce normalized `0.0~1.0` color values.
+
+## 17.1 Rainbow Activation Conditions
+
+Inside `-[NoteNormal_render]`, all of the following must be true:
+
+```text
+m_OptCharIdx < 0
+m_Active != 0
+m_CrimaxMode != 0
+Combo >= 100
+```
+
+Only then does the Note use rainbow rendering.
+
+Otherwise it uses normal Note rendering.
+
+## 17.2 Rainbow Index
+
+The index is equivalent to:
+
+```text
+(m_CrimaxCnt + 10) % 28
+```
+
+Each RGB entry occupies:
+
+```text
+12 bytes
+```
+
+`m_CrimaxCnt` cycles through:
+
+```text
+0~27
+```
+
+during Note updates.
+
+### Conclusion
+
+The Crimax rainbow is not just decorative:
+
+```text
+Crimax flag
++
+active Note
++
+Combo ≥ 100
+↓
+rainbow Note
+```
+
+It is a direct visual indicator of the 100+ Combo Crimax bonus state.
+
+---
+
+# 18. Crimax Bonus Score
+
+After a normal Note judgement, the code checks:
+
+```text
+m_CrimaxMode != 0
+and
+result > 4
+```
+
+Since the maximum judgement value is `5`, this means:
+
+```text
+COOL only
+```
+
+It then checks:
+
+```text
+Combo >= 100
+```
+
+If true:
+
+```text
+TmpStageScore +200
+```
+
+and triggers:
+
+```text
+StartSpScoreEffect
+```
+
+Therefore:
+
+```text
+Crimax Note
++ COOL
++ Combo ≥ 100
+= +200 Stage Score
+```
+
+FINE does not receive this extra 200-point bonus.
+
+---
+
+# 19. ClearCrimax
+
+`+[NoteManager_ClearCrimax]` does:
+
+```text
+iterate over every current Note
+↓
+setCrimaxMode(0)
+```
+
+So it clears Crimax from the entire active Note collection, not only one Note.
+
+**[Not fully investigated]**
+
+The real gameplay call site for `ClearCrimax` has not yet been reliably identified. One direct Ghidra XREF was confirmed to be a false reference inside CRI Atom code.
+
+Therefore, the exact full-flow condition that ends Crimax has not yet been traced.
+
+---
+
+# 20. Interlude: Intermission Mini-Game
+
+Interlude is confirmed to be the single-button rhythm mini-game played during instrumental/intermission sections.
+
+CuePoint entry:
+
+```text
+CuePointFunc_Interlude
+```
+
+Like Crimax, it:
+
+```text
+gets current Difficulty
+↓
+reads CuePoint[difficulty + 1]
+↓
+converts it to int
+↓
+dispatches through a function table
+```
+
+## 20.1 Interlude Type Table
+
+```text
+s_tblInterludeType
+```
+
+Contents:
+
+| Type | Function |
+|---:|---|
+| 0 | `InterludeType_None` |
+| 1 | `InterludeType_Normal` |
+| 2 | `InterludeType_FadeOut` |
+
+---
+
+# 21. Interlude Start and End
+
+## 21.1 Normal
+
+`InterludeType_Normal()`:
+
+```c
+WindowManager_StartInterludeMode();
+NoteManager_AddNote::::(1, 0, 1, 0);
+```
+
+Meaning:
+
+```text
+enter Interlude Mode
+↓
+spawn one NoteInterlude
+```
+
+## 21.2 FadeOut
+
+`InterludeType_FadeOut()`:
+
+```c
+WindowManager_EndInterludeMode();
+```
+
+So this type is effectively the end marker for an Interlude section.
+
+---
+
+# 22. NoteInterlude Judgement
+
+`NoteInterlude` has a full set of methods:
+
+```text
+exec
+render
+setTouchDown
+setTouchUp
+checkResult::::
+isJustFrame
+```
+
+but it does not use the normal Flick-direction gameplay. It is a simple timing-only input.
+
+## 22.1 Timing Window
+
+`NoteInterlude_checkResult::::` directly reuses:
+
+```text
+s_tblNoteNormal_Front
+s_tblNoteNormal_Back
+```
+
+Therefore, Interlude timing uses the same:
+
+```text
+30 Hz tick
+COOL / FINE / SAFE / SAD
+```
+
+timing windows as normal Notes.
+
+## 22.2 Success Condition
+
+An Interlude input counts as successful only when:
+
+```text
+result > 3
+```
+
+which means:
+
+```text
+FINE
+or
+COOL
+```
+
+SAFE / SAD do not count as Interlude success.
+
+This matches the actual gameplay:
+
+> During an interlude, only one button appears, and the player simply taps the Note on time.
+
+---
+
+# 23. Interlude Scoring
+
+Each successful Interlude input adds:
+
+```text
+TmpInterludeCnt +1
+TotalInterludeSuccess +1
+TmpStageScore +1
+```
+
+If, for the current song/difficulty:
+
+```text
+TmpInterludeCnt >= TotalInterlude
+```
+
+meaning all Interlude Notes were hit successfully, the game adds:
+
+```text
+TmpStageScore +39
+```
+
+and also triggers:
+
+```text
+special sound effect
+StartSpScoreEffect(39)
+EffectManager_AddEffect2D(..., 7, ...)
+```
+
+Therefore, the final successful Interlude Note effectively awards:
+
+```text
+base +1
+all-success bonus +39
+total +40
+```
+
+---
+
+# 24. Difficulty Enumeration
+
+The result screen confirms:
+
+| Internal Value | Difficulty |
+|---:|---|
+| 0 | Easy |
+| 1 | Normal |
+| 2 | Hard |
+| 3 | Extreme |
+| 4 | Break The Limit |
+
+BTL has special handling in normal Note judgement, Gauge, Combo Reset, and Note lifetime.
+
+---
+
+# 25. Result Screen and Clear Rank
+
+The result screen reads:
+
+```text
+Total Score
+Stage Score
+Combo Bonus
+Max Combo
+Total Notes
+Cool
+Fine
+Safe
+Sad
+Worst
+Interlude
+Difficulty
+```
+
+Total score is:
+
+```text
+TmpStageScore + TmpComboScore
+```
+
+## 25.1 Preliminary Rank Rules
+
+The result screen clearly uses:
+
+```text
+COOL + FINE + SAFE
+```
+
+relative to `TotalNotes` when determining Rank / Clear state.
+
+The code contains thresholds including:
+
+```text
+70%
+80%
+95%
+100%
+```
+
+In addition:
+
+```text
+GetMaxCombo() == TotalNotes
+```
+
+causes:
+
+```text
+SetPerfectClear(...)
+```
+
+**[Not fully investigated]**
+
+The complete mapping between internal Rank values `0~6` and the exact in-game rank names has not yet been fully reconstructed, so this document does not assign names prematurely.
+
+---
+
+# 26. Simplified Model for a Modern 64-bit Reimplementation
+
+If the goal is not to reproduce every line of legacy code but to rebuild the core behavior for a modern 64-bit version, the currently confirmed mechanics can be simplified as follows.
+
+## 26.1 Timing
+
+```text
+playTick = ceil(audioPlayTimeSeconds × 30)
+noteTick = playTick - note.baseTime
+```
+
+## 26.2 Judgement
+
+```text
+read TouchDown / TouchUp tick
+↓
+lookup Front / Back judgement table
+↓
+combine the two timing results
+↓
+apply early-hold correction
+↓
+check Flick direction
+↓
+check BoardType
+↓
+produce judgement enum 0~5
+```
+
+## 26.3 Result Enum
+
+```text
+5 COOL
+4 FINE
+3 SAFE
+2 SAD
+1 WORST
+0 INVALID / NONE
+```
+
+## 26.4 Combo
+
+```text
+COOL/FINE → combo++
+SAFE/SAD/WORST → combo reset
+```
+
+BTL is an exception.
+
+## 26.5 Score
+
+```text
+COOL 300
+FINE 150
+SAFE 50
+SAD 30
+WORST 0
+
++ Combo Bonus
++ Crimax Bonus
++ Interlude Bonus
+```
+
+## 26.6 Gauge
+
+```text
+Start = 128
+Max = 256
+
+weight:
+COOL  +2
+FINE  +2
+SAFE   0
+SAD   -5
+WORST -10
+
+coefficient = 64 / TotalNotes + 0.01
+```
+
+## 26.7 Fail Conditions
+
+```text
+Gauge <= 0
+OR
+maximum theoretically achievable SAFE-or-better rate < 50%
+→ Game Over
+```
+
+## 26.8 Crimax
+
+```text
+CuePoint
+↓
+find Crimax-enabled Note among the most recent 4 Notes
+↓
+m_CrimaxMode = 1
+↓
+Combo >= 100
+↓
+Rainbow
+
+If the judgement is also COOL:
++200 Stage Score
+```
+
+## 26.9 Interlude
+
+```text
+Interlude Cue
+↓
+StartInterludeMode
+↓
+spawn NoteInterlude
+↓
+single-button timing input
+↓
+COOL/FINE = success
+↓
+each success +1
+↓
+all-success bonus +39
+```
+
+---
+
+# 27. Areas Not Yet Fully Investigated
+
+The following systems have visible entry points but have not yet been fully reverse-engineered:
+
+- Complete Break The Limit rules
+- Exact Clear Rank names and full threshold mapping
+- Real call site / end condition for `ClearCrimax`
+- Purpose of the second `s_tblNoteNormal_Front / Back` pair
+- Reachability and meaning of the second `s_tblAddScore` high-judgement values
+- Exact Replay playback behavior
+- `NoteThrow`
+- `NoteArrow`
+- `NoteWait`
+- `NoteInterlude.exec`
+- Full `StageManager` state machine
+- `WindowGameWindow` HUD rendering details
+- Telop / SmallTelop
+- Lyrics
+- FadeIn / FadeOut
+- SetBPM / SetDelay
+- Chart file format and Note generation format
+- Full TouchManager Flick gesture recognition algorithm
+- Complete CRI audio/video ↔ chart synchronization correction logic
+
+---
+
+# 28. Confirmed Ghidra Symbols Quick Reference
+
+```text
+SceneGame_Exec
+NoteManager_exec
+NoteNormal_exec
+NoteNormal_checkResult::::
+NoteNormal_render
+NoteNormal_isCrimaxEnable
+NoteObjBase_isInsideJudgeFrame
+NoteObjBase_setCrimaxMode:
+MikuFlickCriManager_Exec
+MikuFlickCriManager_GetPlayCnt
+CriManager::GetPlayTime
+CriMvEasyPlayer::GetTime
+StatusData_AddFlickTypeNum:
+NoteManager_AddTensionGauge:
+NoteManager_GetLastCrimaxEnableNote
+NoteManager_ClearCrimax
+CuePointFunc_Crimax
+CuePointFunc_Interlude
+InterludeType_Normal
+InterludeType_FadeOut
+NoteInterlude_checkResult::::
+WindowResult_loadTexture
+```
+
+Important tables:
+
+```text
+s_tblTensionGauge          @ 0x00138F4C
+s_tblDifficultEndTimeOfs   @ 0x001392FC
+s_tblRainbow               @ 0x00139310
+s_tblNoteNormal_Front      @ 0x00139488
+s_tblNoteNormal_Back       @ 0x001394B4
+s_tblAddScore              @ 0x001394E4
+```
+
+Important globals:
+
+```text
+DAT_00163088 → Tension Gauge
+DAT_00164340 → CRI-derived PlayCnt
+```
+
+---
+
+# 29. Summary
+
+The core mechanics of MikuFlick2 can currently be summarized as:
+
+```text
+CRI audio clock
+↓
+30 Hz gameplay tick
+↓
+TouchDown / TouchUp dual-timestamp judgement
+↓
+Flick direction and Board region correction
+↓
+COOL / FINE / SAFE / SAD / WORST
+↓
+Score + Combo + Gauge
+↓
+special systems such as Crimax / Interlude
+```
+
+By modern rhythm-game standards, the judgement granularity is coarse. However, the implementation itself is not simplistic.
+
+The current reverse-engineering results show deliberate handling for:
+
+- audio-clock synchronization
+- asymmetric early/late timing leniency
+- early touch-hold behavior before a Flick
+- direction-mismatch downgrade
+- Gauge normalization by chart Note count
+- Gauge-linked BGM volume
+- early failure when clearing becomes mathematically impossible
+- Crimax 100-Combo rainbow feedback
+- the single-button Interlude bonus mini-game
+
+For a 2012 touchscreen Flick rhythm game, this is clearly a system tuned around practical touch behavior rather than a naive "timestamp difference → judgement" implementation.
+
+---
+
+*Prepared: 2026-10-05*  
+*Sample: MikuFlick2 1.1.5 / ARMv7 / cryptid 0*  
+*Status: Reverse engineering in progress*
