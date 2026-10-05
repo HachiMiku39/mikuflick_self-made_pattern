@@ -2602,3 +2602,836 @@ For a 2012 touchscreen Flick rhythm game, this is clearly a system tuned around 
 *Prepared: 2026-10-05*  
 *Sample: MikuFlick2 1.1.5 / ARMv7 / cryptid 0*  
 *Status: Reverse engineering in progress*
+
+# MikuFlick2 Legacy Asset Notes
+
+> This document describes legacy assets extracted from **MikuFlick2 1.1.5**, their confirmed original purposes, and the planned handling of those assets in the modernized reimplementation.
+>
+> The information here comes from **Ghidra static analysis** and **testing on the original game**.
+>
+> File names are treated as case-insensitive in this document. The actual extracted file names remain authoritative.
+>
+> Assets whose purposes have not been confirmed are explicitly marked **UNKNOWN / TODO**. Do not assign a purpose without evidence.
+
+## 1. Asset Usage Philosophy
+
+The goal of the modern version is not to reproduce the 2012 UI pixel-for-pixel.
+
+Priorities:
+
+- Reproduce the original gameplay mechanics as faithfully as possible
+- Preserve original sound-effect and BGM behavior where practical
+- Preserve the original visual identity and important assets
+- Redesign layouts for modern iPhone and iPad displays
+- Allow Legacy UI and Modern UI to coexist
+- Keep the original Texture Atlases as asset sources and design references
+- Drop obsolete system-specific assets when they are no longer useful
+
+Recommended separation:
+
+```text
+Legacy Assets
+├─ Original Texture Atlas
+├─ Original Sound Effects
+├─ Original BGM
+├─ Original MV / USM
+└─ Original Gameplay Textures
+
+Modern Runtime
+├─ Modern Layout
+├─ Safe Area Adaptation
+├─ High-Resolution Assets
+├─ Modern Rendering
+└─ Original Gameplay Behavior
+```
+
+## 2. Texture Atlases and plist Files
+
+A large part of the original UI uses:
+
+```text
+*.png
++
+*.plist
+```
+
+as Texture Atlases.
+
+Example:
+
+```text
+UI_tex_02.png
+UI_tex_02.plist
+```
+
+The plist files describe sprite regions, dimensions, rotation and related atlas metadata, so the modern version can parse them directly instead of manually cropping every sprite.
+
+Ghidra analysis confirmed that the original `TPManager_CreatePlistNames` logic does:
+
+```text
+load plist
+→ read frames
+→ allKeys
+→ sort by name
+→ build global Texture IDs
+```
+
+The modern version should convert this into something like:
+
+```text
+Legacy Texture ID
+→ Frame Name
+→ Atlas
+→ Rect
+→ Modern Asset ID
+```
+
+instead of keeping old numeric Texture IDs throughout gameplay code.
+
+## 3. TPManager Atlas Order
+
+The original `s_tblTPPlistName` order has been confirmed as:
+
+```text
+UI_tex_01
+UI_tex_02
+UI_tex_03
+UI_tex_04
+UI_tex_05
+UI_tex_06
+UI_tex_07
+bg_tex_01
+bg_tex_02
+bg_tex_03
+bg_tex_04
+bg_tex_05
+bg_tex_06
+bg_tex_07
+game_effect_01
+game_tex_01
+game_tex_02
+music_00_01
+thum_01_01
+credits_ja
+ending
+```
+
+This order can be used to reconstruct compatibility mappings from legacy Texture IDs to named assets.
+
+## 4. Confirmed Rank Asset Mapping
+
+Using `UI_tex_02.plist` and the original Texture ID logic, the following mapping has been confirmed:
+
+```text
+Rank 0 → perfect.png
+Rank 1 → clearrank_00.png
+Rank 2 → clearrank_01.png
+Rank 3 → clearrank_02.png
+Rank 4 → clearrank_03.png
+Rank 5 → clearrank_04.png
+Rank 6 → clearrank_05.png
+```
+
+Visible UI labels:
+
+```text
+Rank 0 → Perfect!
+Rank 1 → S
+Rank 2 → A
+Rank 3 → B
+Rank 4 → C
+Rank 5 → D
+Rank 6 → E
+```
+
+## 5. Loading Screens and Backgrounds
+
+### `bg_tex_02`
+
+Used for:
+
+```text
+Song Select background
+Game Mode
+MV Mode
+```
+
+### `bg_tex_03`
+
+Used for:
+
+```text
+Result screen background
+```
+
+### `bg_tex_06`
+
+Used for:
+
+```text
+Startup loading screen
+```
+
+### `bg_tex_07`
+
+Used for:
+
+```text
+Loading screens shown while switching between menus
+```
+
+The modern version may preserve the visual idea without reproducing the old loading flow exactly.
+
+## 6. App Icons
+
+The original bundle contains many icon variants from different iOS generations:
+
+```text
+AppIcon*
+Appleicon_miku_*
+Icon*
+```
+
+A high-resolution source already exists, for example:
+
+```text
+Appleicon_miku_1024x1024_Flatdesign.png
+```
+
+Recommended modern workflow:
+
+```text
+high-resolution original logo
+→ cleanup / adjustment
+→ modern AppIcon Asset Catalog
+```
+
+## 7. BGM
+
+### `BGM01.caf`
+
+```text
+Main menu BGM
+```
+
+### `BGM02.caf`
+
+```text
+UNKNOWN
+```
+
+No clear application-layer use has been confirmed. It may be related to the old Twitter/share flow, but there is not enough evidence to state that as fact.
+
+### `BGM03.caf`
+
+```text
+Settings menu
+Shop
+Normal result screen
+```
+
+### `BGM04.caf`
+
+```text
+Special result BGM for AP / Perfect
+```
+
+Here AP means:
+
+```text
+all Notes = COOL
+```
+
+which corresponds to:
+
+```text
+Perfect!
+```
+
+### `BGM05.caf`
+
+```text
+Normal game-result BGM
+```
+
+## 8. Song Packs / USM
+
+Much of the original song content is stored as:
+
+```text
+*.usm
+```
+
+Examples:
+
+```text
+cloverclub.usm
+hajimete_no_oto.usm
+hatsune_miku_no_gekisyou.usm
+just_be_friends.usm
+koi_wa_sensou.usm
+magnet.usm
+promise.usm
+roshin_yuukai.usm
+taiyoumirai_no_quartet.usm
+ura_omote_lovers.usm
+```
+
+The USM content includes not only gameplay MVs, but also the short preview content used on the song-selection screen.
+
+The modern song-selection system therefore needs:
+
+```text
+select song
+↓
+play that song's Preview
+```
+
+## 9. Legacy Song Select UI
+
+The original song-selection screen behaves like a classic iPod / Cover Flow interface:
+
+```text
+swipe albums left/right
+↓
+current song moves to the center
+↓
+play that song's Preview
+```
+
+This can be retained as `Legacy UI`.
+
+## 10. Modern SEKAI-style Song Select UI
+
+A Modern UI may use a Project SEKAI-like song list:
+
+```text
+tap song
+↓
+select song
+↓
+play Preview
+```
+
+Both interfaces can share the same `SongPreviewController`.
+
+## 11. Gameplay Image Assets
+
+### `game_tex_*`
+
+Contains core gameplay materials, including:
+
+- 9-key Flick input
+- Notes
+- Gameplay UI
+- Other core interaction elements
+
+### `game_effect_*`
+
+Contains:
+
+- Judgement effects
+- Interlude mini-game visuals
+- Other gameplay effects
+
+These are closely tied to the Gameplay Engine and should be treated as high-priority assets.
+
+## 12. Interlude
+
+The original game includes a single-button rhythm mini-game during instrumental/intermission sections:
+
+```text
+Interlude Mode
+```
+
+Behavior:
+
+```text
+single button appears
+↓
+player taps on the beat
+↓
+FINE / COOL count as success
+```
+
+Related assets are located in:
+
+```text
+game_tex_*
+game_effect_*
+```
+
+The modern version should continue to support this mechanic.
+
+## 13. Help Images
+
+Includes:
+
+```text
+help_01.png
+help_02.png
+```
+
+These explain the original UI and controls.
+
+Because the modern version will redesign the interface:
+
+```text
+do not import directly
+```
+
+If a tutorial is needed, create a new Help / Tutorial flow for the modern UI.
+
+## 14. Launch Images
+
+Examples:
+
+```text
+LaunchImage*
+```
+
+These belong to the old static iOS Launch Image system.
+
+Modern iOS no longer needs this asset workflow, so they should not be imported directly. They may still be kept as visual references.
+
+## 15. Original Startup Logos
+
+Includes:
+
+```text
+logo_sega.png
+logo_cri.png
+logo_crypton.png
+```
+
+These were shown during the original startup flow.
+
+Current plan:
+
+```text
+do not include
+```
+
+## 16. Japanese Keyboard Assets
+
+Includes:
+
+```text
+mf_hiragana_*
+mf_katakana_*
+```
+
+Purpose:
+
+```text
+original Flick-style Japanese keyboard textures
+```
+
+If the modern version uses a redesigned input UI, direct import is not required, although the assets may still be useful as design references.
+
+## 17. Ending / Post-clear Bonus Content
+
+Related assets:
+
+```text
+ending.png
+ending.plist
+ending.usm
+```
+
+These belong to the original post-clear bonus content.
+
+Planned location in the modern version:
+
+```text
+Settings
+→ Extras / Legacy Content
+→ Ending
+```
+
+so the content can be played manually.
+
+## 18. Credits
+
+Includes:
+
+```text
+credits_en.png
+credits_ja.png
+credits_ja.plist
+```
+
+These contain original Credits / copyright information.
+
+Whether they are included depends on the final distribution model and attribution requirements.
+
+## 19. Sound Effects
+
+### `Na_Title_A_03_keep.caf`
+
+Confirmed use:
+
+```text
+startup sound played before the main-menu BGM
+```
+
+Planned:
+
+```text
+retain
+```
+
+## 20. Confirmed SE Mapping
+
+### `SE01_03.caf`
+
+```text
+SAFE judgement sound
+```
+
+### `SE01.caf`
+
+```text
+judgement sound for a Note entering Rainbow / Crimax state
+```
+
+### `SE02_01.caf`
+
+```text
+Pause
+menu button
+```
+
+### `SE02.caf`
+
+```text
+Interlude mini-game success interaction sound
+```
+
+### `SE03.caf`
+
+```text
+SAD judgement sound
+```
+
+### `SE04.caf`
+
+```text
+FINE / COOL judgement sound
+```
+
+### `SE05_01.caf`
+
+```text
+result-screen reveal sound
+```
+
+### `SE09.caf`
+
+```text
+menu back-button sound
+```
+
+## 21. Unconfirmed SE Files
+
+The following files have not yet been fully identified:
+
+```text
+SE01_01.caf
+SE04_01.caf
+SE04v2.caf
+SE05.caf
+SE06.caf
+SE07.caf
+SE08.caf
+SE10.caf
+SE11.caf
+SE12.caf
+SE13.caf
+SE14.caf
+SE15.caf
+SE16.caf
+```
+
+Until a Ghidra call site or original-game behavior confirms their use:
+
+```text
+do not guess
+```
+
+Keep them marked:
+
+```text
+UNKNOWN / TODO
+```
+
+## 22. UI Texture Atlases
+
+Includes:
+
+```text
+UI_tex_01.png
+UI_tex_01.plist
+...
+UI_tex_07.png
+UI_tex_07.plist
+```
+
+Additional files also exist:
+
+```text
+UI_tex_08.png
+UI_tex_09.png
+```
+
+Modernization rule:
+
+> The original design may be used as a reference, but the layout does not need to be reproduced 1:1.
+
+Reasons include:
+
+- Original UI targeted much older iPhone resolutions
+- Modern aspect ratios are different
+- Safe Areas
+- Dynamic Island
+- iPad
+- Retina / high-DPI rendering
+- Different use of horizontal screen space
+
+The modern version should preserve as much as practical of:
+
+```text
+visual language
+button style
+animation style
+original assets
+```
+
+while redesigning:
+
+```text
+Layout
+Anchor
+Safe Area
+HUD Position
+Spacing
+Touch Region
+```
+
+## 23. Legacy UI and Modern UI
+
+### Legacy UI
+
+Goal:
+
+```text
+stay close to the original layout
+```
+
+Useful for:
+
+- nostalgia
+- original-game comparison
+- regression testing
+- mechanics verification
+
+### Modern UI
+
+Goal:
+
+```text
+adapt to modern iPhone / iPad displays
+```
+
+The following may be redesigned:
+
+- HUD
+- Song Select
+- Settings
+- Result screen
+- Safe Area handling
+- horizontal-space usage
+
+The following should not change merely because of UI modernization:
+
+```text
+Gameplay Timing
+Judgement
+Score Engine
+Flick Mechanics
+Crimax
+Interlude
+```
+
+## 24. AI Upscaling
+
+Some original UI assets are low resolution.
+
+Possible treatment:
+
+```text
+2x / 4x AI Upscale
+```
+
+### Good candidates for AI Upscaling
+
+- illustrations
+- backgrounds
+- character artwork
+- some gameplay effects
+
+### Better candidates for manual/vector recreation
+
+- fonts
+- numbers
+- geometric buttons
+- lines
+- UI frames
+- Rank letters
+
+### Rule
+
+AI upscaling should not:
+
+```text
+change original shapes
+change UI proportions
+invent new decoration
+reduce Note readability
+```
+
+AI upscaling should be treated as `Asset Restoration`, not `UI Redesign`.
+
+## 25. Recommended Modern Asset Pipeline
+
+```text
+Original IPA
+↓
+Extract
+↓
+Read PNG + plist
+↓
+Build Legacy Asset Manifest
+↓
+Classify Assets
+├─ Gameplay
+├─ UI
+├─ Effect
+├─ Background
+├─ Text
+└─ Illustration
+↓
+Optional 4x Upscale / Redraw
+↓
+Modern Atlas
+↓
+Modern Game
+```
+
+Keep the originals permanently:
+
+```text
+assets/original/
+```
+
+Do not overwrite them.
+
+Example layout:
+
+```text
+assets/
+├─ original/
+├─ extracted/
+├─ restored/
+├─ modern/
+└─ manifests/
+```
+
+## 26. Current Priority
+
+High priority:
+
+```text
+game_tex_*
+game_effect_*
+SE*.caf
+BGM*.caf
+UI_tex_*.plist
+UI_tex_*.png
+USM Preview
+```
+
+Low priority / currently excluded:
+
+```text
+help_*
+LaunchImage*
+logo_sega
+logo_cri
+logo_crypton
+mf_hiragana_*
+mf_katakana_*
+```
+
+Keep separately:
+
+```text
+ending.*
+credits_*
+```
+
+## 27. Distribution and Copyright Notes
+
+These assets originate from a commercial game.
+
+Recommended public-project structure:
+
+- Publish reimplementation code, tools, asset mappings and documentation
+- Do not assume original commercial artwork, audio, songs or MVs can be redistributed with the repository
+- Consider importing resources locally from a user's own original IPA
+- Use extracted assets during development as compatibility and visual references
+
+A useful component would be:
+
+```text
+OriginalAssetImporter
+```
+
+with a flow such as:
+
+```text
+user selects original IPA
+↓
+verify supported version
+↓
+extract assets locally
+↓
+build modern Asset Pack
+```
+
+## 28. Summary
+
+The modernization strategy is not:
+
+```text
+scale the old app UI to a larger resolution
+```
+
+It is:
+
+```text
+extract original assets
++
+understand their original purpose
++
+preserve Gameplay Identity
++
+build a modern layout system
+```
+
+Core rules:
+
+> Keep gameplay behavior as faithful to the original as practical.  
+> Modernize UI layout for current devices.  
+> Preserve original assets as compatibility and visual-reference sources.  
+> Do not invent uses for assets whose purposes are still unknown.
